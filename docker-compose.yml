@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Sin "ports": la BD solo es accesible desde la red interna de Docker.
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      AUDIO_DIR: /data/audio
+    volumes:
+      - audio:/data/audio
+      - ./data:/srv/data # CSV de inventario editable sin reconstruir la imagen
+      # Carpeta local sincronizada por el cliente de OneDrive (Windows: OneDrive Desktop ya la trae;
+      # Linux: cliente libre https://github.com/abraunegg/onedrive). Ajusta la ruta del host a la izquierda.
+      - ${ONEDRIVE_LOCAL_FOLDER:-./onedrive}:/data/onedrive
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  pgdata:
+  audio:

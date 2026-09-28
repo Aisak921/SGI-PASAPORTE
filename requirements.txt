@@ -1,0 +1,8 @@
+python-telegram-bot[job-queue]>=21.5,<23
+groq>=0.13
+sqlmodel>=0.0.22
+asyncpg>=0.29
+pydantic>=2.7
+pydantic-settings>=2.3
+tzdata
+openpyxl>=3.1

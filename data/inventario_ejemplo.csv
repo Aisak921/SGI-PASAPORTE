@@ -1,0 +1,9 @@
+ubicacion,tipo_equipo,etiqueta,serial,marca_modelo
+Módulo 3,Huellero,,SN-HUE-0003,
+Módulo 3,Impresora,,SN-IMP-0003,
+Módulo 4,Camara Fotográfica,,SN-CAM-0004,
+Entrega,Computador,ENT-01,SN-PC-0101,
+Entrega,Computador,ENT-02,SN-PC-0102,
+Recambio,Huellero,REC-HUE-01,SN-HUE-9001,
+Recambio,Huellero,REC-HUE-02,SN-HUE-9002,
+Recambio,Camara Fotográfica,REC-CAM-01,SN-CAM-9001,
