@@ -30,6 +30,7 @@ def main() -> None:
 
     privado = filters.ChatType.PRIVATE
     app.add_handler(CommandHandler("chatid", h.cmd_chatid))  # utilidad de setup (cualquier chat)
+    app.add_handler(CommandHandler("reportar", h.cmd_reportar, filters=privado))
     app.add_handler(CommandHandler("start", h.cmd_start, filters=privado))
     app.add_handler(CommandHandler("help", h.cmd_help, filters=privado))
     app.add_handler(CommandHandler("ayuda", h.cmd_help, filters=privado))
@@ -40,7 +41,7 @@ def main() -> None:
     app.add_handler(CommandHandler("sync_inventario", h.cmd_sync_inventario, filters=privado))
     app.add_handler(CommandHandler("cargar_inventario", h.cmd_cargar_inventario, filters=privado))
     app.add_handler(CommandHandler("informe_soporte", h.cmd_informe_soporte, filters=privado))
-    app.add_handler(CallbackQueryHandler(h.on_callback, pattern=r"^(tomar|cerrar|regrabar|volver|baja|afect|repl):"))
+    app.add_handler(CallbackQueryHandler(h.on_callback, pattern=r"^(tomar|cerrar|regrabar|volver|baja|afect|repl|rpt_):"))
     # Cierre: voz o texto en REPLY al mensaje del caso, dentro del grupo de Soporte TI.
     app.add_handler(
         MessageHandler(

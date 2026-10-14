@@ -1,4 +1,5 @@
 """Configuración: todo sale de variables de entorno (.env)."""
+# pyrefly: ignore [missing-import]
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 

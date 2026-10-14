@@ -37,6 +37,28 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      AUDIO_DIR: /data/audio
+    volumes:
+      - audio:/data/audio
+      - ${ONEDRIVE_LOCAL_FOLDER:-./onedrive}:/data/onedrive
+    ports:
+      - "8080:8080"
+    command: ["python", "-m", "uvicorn", "app.web:app", "--host", "0.0.0.0", "--port", "8080"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
 volumes:
   pgdata:
   audio:

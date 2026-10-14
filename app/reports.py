@@ -4,8 +4,9 @@
    Excel base con los datos ACTUALES de Postgres (que es la fuente de verdad), agrega/actualiza
    la pestaña 'Dashboard_Inventario' con KPIs y gráficos, y deja 'Buscador Dinámico' y
    'Configuracion' con su estructura y fórmulas intactas.
-2. generar_excel_incidencias(periodo) -> genera desde cero el libro de seguimiento de Soporte TI
-   ('Dashboard_Soporte' + 'Bitácora_Detallada') para el período pedido.
+2. generar_excel_incidencias(periodo) -> genera desde cero el libro de seguimiento de Soporte TI.
+   Sin argumento (periodo='completo'): Dashboard_Total + Bitácora_Completa + una pestaña por mes.
+   Con periodo='diario'|'semanal'|'mensual': archivo adicional del período específico.
 
 "NUBE" A COSTO $0: no se usa la API de OneDrive. Ambos archivos se escriben en una ruta local
 que está DENTRO de una carpeta sincronizada por el cliente de OneDrive (ver docker-compose.yml
@@ -105,9 +106,9 @@ def _rango_periodo(periodo: str, desde: datetime | None, hasta: datetime | None)
     if periodo == "diario":
         ini, etiqueta = hoy, f"Hoy — {hoy:%d/%m/%Y}"
     elif periodo == "semanal":
-        ini, etiqueta = hoy - timedelta(days=hoy.weekday()), f"Semana del {hoy - timedelta(days=hoy.weekday()):%d/%m/%Y}"
-    else:  # mensual
-        ini, etiqueta = hoy.replace(day=1), f"{hoy:%B %Y}"
+        ini, etiqueta = hoy - timedelta(days=7), f"Últimos 7 días ({hoy - timedelta(days=7):%d/%m/%Y} — {hoy:%d/%m/%Y})"
+    else:  # mensual — últimos 30 días
+        ini, etiqueta = hoy - timedelta(days=30), f"Últimos 30 días ({hoy - timedelta(days=30):%d/%m/%Y} — {hoy:%d/%m/%Y})"
     fin = ahora_local + timedelta(minutes=1)  # margen para incluir "ahora mismo"
     return ini.astimezone(ZoneInfo("UTC")), fin.astimezone(ZoneInfo("UTC")), etiqueta
 
@@ -161,6 +162,8 @@ def _colorear_columna_estado(ws: Worksheet, col_letra: str, filas: int) -> None:
 
 
 def _asegurar_dropdown_ubicacion(wb) -> None:
+    if "Buscador Dinámico" not in wb.sheetnames or "Configuracion" not in wb.sheetnames:
+        return
     ws = wb["Buscador Dinámico"]
     ws.data_validations.dataValidation = [dv for dv in ws.data_validations.dataValidation if dv.sqref != "C5"]
     n = wb["Configuracion"].max_row
@@ -274,6 +277,14 @@ ENCABEZADOS_BITACORA = [
     "Síntoma", "Diagnóstico", "Fecha Reporte", "Fecha Cierre", "MTTR (min)", "Baja/Reemplazo",
 ]
 
+# Colores de fila según estado del caso
+_COLOR_ESTADO_FILA = {
+    "cerrada": VERDE,
+    "en_atencion": AZUL_CLARO,
+    "abierta": AMARILLO,
+    "pendiente_confirmacion": AMARILLO,
+}
+
 
 async def _casos_del_periodo(s, desde: datetime, hasta: datetime) -> list[Incidencia]:
     r = await s.exec(
@@ -302,21 +313,30 @@ async def _fila_bitacora(s, inc: Incidencia) -> tuple:
     )
 
 
-def _hoja_bitacora(wb, filas: list[tuple]) -> None:
-    ws = _limpiar_hoja(wb, "Bitácora_Detallada")
+def _hoja_bitacora_sync(wb, nombre_hoja: str, filas: list[tuple]) -> None:
+    """Crea (o reemplaza) una hoja de bitácora con las filas dadas, coloreadas por estado."""
+    ws = _limpiar_hoja(wb, nombre_hoja)
     _tabla(ws, 1, 1, ENCABEZADOS_BITACORA, filas)
     ws.freeze_panes = "A2"
-    anchos = {"A": 6, "B": 16, "C": 16, "D": 16, "E": 20, "F": 18, "G": 18, "H": 36, "I": 36, "J": 17, "K": 17, "L": 12, "M": 14}
+    anchos = {"A": 6, "B": 16, "C": 16, "D": 16, "E": 20, "F": 18, "G": 18,
+              "H": 36, "I": 36, "J": 17, "K": 17, "L": 12, "M": 14}
     for letra, ancho in anchos.items():
         ws.column_dimensions[letra].width = ancho
     for col in ("J", "K"):
         for c in ws[col][1:]:
             if c.value:
                 c.number_format = "dd/mm/yyyy hh:mm"
+    # Colorear filas según estado
+    for i, fila in enumerate(filas, start=2):
+        color = _COLOR_ESTADO_FILA.get(fila[1])
+        if color:
+            for col_idx in range(1, len(ENCABEZADOS_BITACORA) + 1):
+                ws.cell(i, col_idx).fill = PatternFill("solid", fgColor=color)
 
 
-def _hoja_dashboard_soporte(wb, filas: list[tuple], etiqueta_periodo: str) -> None:
-    ws = _limpiar_hoja(wb, "Dashboard_Soporte")
+def _hoja_dashboard_soporte(wb, nombre_hoja: str, filas: list[tuple], etiqueta_periodo: str) -> None:
+    """Dashboard de KPIs + gráficos para el conjunto de filas dado."""
+    ws = _limpiar_hoja(wb, nombre_hoja)
     ws.sheet_view.showGridLines = False
     ws["B2"] = "Dashboard de Soporte TI — Oficina de Pasaportes"
     ws["B2"].font = F_TITULO
@@ -337,58 +357,101 @@ def _hoja_dashboard_soporte(wb, filas: list[tuple], etiqueta_periodo: str) -> No
     _tabla(ws, 30, 5, ["Fecha", "Casos"], [(d.strftime("%d/%m"), n) for d, n in serie])
     ws.cell(29, 2, "Datos de los gráficos (no editar)").font = Font(italic=True, size=9, color="9CA3AF")
 
-    bar = BarChart()
-    bar.type, bar.title, bar.y_axis.title = "bar", "Equipos con más fallas", "Casos"
-    bar.add_data(Reference(ws, min_col=3, min_row=30, max_row=30 + len(top_equipos)), titles_from_data=True)
-    bar.set_categories(Reference(ws, min_col=2, min_row=31, max_row=30 + len(top_equipos)))
-    bar.height, bar.width = 8, 14
-    ws.add_chart(bar, "B9")
+    if top_equipos:
+        bar = BarChart()
+        bar.type, bar.title, bar.y_axis.title = "bar", "Equipos con más fallas", "Casos"
+        bar.add_data(Reference(ws, min_col=3, min_row=30, max_row=30 + len(top_equipos)), titles_from_data=True)
+        bar.set_categories(Reference(ws, min_col=2, min_row=31, max_row=30 + len(top_equipos)))
+        bar.height, bar.width = 8, 14
+        ws.add_chart(bar, "B9")
 
-    line = LineChart()
-    line.title, line.y_axis.title = "Evolución de incidencias", "Casos"
     if serie:
+        line = LineChart()
+        line.title, line.y_axis.title = "Evolución de incidencias", "Casos"
         line.add_data(Reference(ws, min_col=6, min_row=30, max_row=30 + len(serie)), titles_from_data=True)
         line.set_categories(Reference(ws, min_col=5, min_row=31, max_row=30 + len(serie)))
-    line.height, line.width = 8, 16
-    ws.add_chart(line, "H9")
+        line.height, line.width = 8, 16
+        ws.add_chart(line, "H9")
 
     for letra, ancho in {"B": 16, "C": 8, "D": 16, "E": 10, "F": 18, "G": 4, "H": 14}.items():
         ws.column_dimensions[letra].width = ancho
 
 
 async def generar_excel_incidencias(
-    periodo: str = "mensual", *, desde: datetime | None = None, hasta: datetime | None = None, ruta: str | Path | None = None
+    periodo: str = "completo", *, desde: datetime | None = None, hasta: datetime | None = None,
+    ruta: str | Path | None = None
 ) -> Path:
-    """Genera desde cero el reporte de Soporte TI para el período dado."""
-    if ruta is None:
-        folder = Path(settings.ONEDRIVE_SOPORTE_XLSX).parent
-        if periodo == "mensual":
-            ruta = Path(settings.ONEDRIVE_SOPORTE_XLSX)
-        else:
-            ruta = folder / f"Reporte_Gestion_Soporte_TI_{periodo}.xlsx"
-    else:
-        ruta = Path(ruta)
+    """Genera el reporte de Soporte TI.
 
-    desde_dt, hasta_dt, etiqueta = _rango_periodo(periodo, desde, hasta)
+    - periodo='completo' (default): un archivo con TODO el historial + una pestaña por mes.
+    - periodo='diario'|'semanal'|'mensual': archivo adicional del período específico.
+    """
+    ruta = Path(ruta or settings.ONEDRIVE_SOPORTE_XLSX)
 
     async with SessionLocal() as s:
-        casos = await _casos_del_periodo(s, desde_dt, hasta_dt)
-        filas = [await _fila_bitacora(s, inc) for inc in casos]
+        if periodo == "completo":
+            # Traer TODOS los casos sin filtro de fecha
+            todos = (await s.exec(
+                select(Incidencia)
+                .where(Incidencia.estado != EstadoIncidencia.DESCARTADA.value)
+                .order_by(Incidencia.fechahora_reporte)
+            )).all()
+            filas_todas = [await _fila_bitacora(s, inc) for inc in todos]
+            # Agrupar por mes local (año, mes)
+            meses: dict[tuple[int, int], list[tuple]] = {}
+            for fila, inc in zip(filas_todas, todos):
+                if inc.fechahora_reporte:
+                    dt_local = inc.fechahora_reporte.astimezone(TZ)
+                    clave: tuple[int, int] = (dt_local.year, dt_local.month)
+                else:
+                    clave = (0, 0)
+                meses.setdefault(clave, []).append(fila)
+            return await asyncio.to_thread(_escribir_soporte_completo_sync, ruta, filas_todas, meses)
+        else:
+            desde_dt, hasta_dt, etiqueta = _rango_periodo(periodo, desde, hasta)
+            casos = await _casos_del_periodo(s, desde_dt, hasta_dt)
+            filas = [await _fila_bitacora(s, inc) for inc in casos]
+            ruta_periodo = ruta.parent / f"Reporte_Gestion_Soporte_TI_{periodo}.xlsx"
+            return await asyncio.to_thread(_escribir_soporte_periodo_sync, ruta_periodo, filas, etiqueta)
 
-    return await asyncio.to_thread(_escribir_soporte_sync, ruta, filas, etiqueta)
 
+def _escribir_soporte_completo_sync(
+    ruta: Path, filas_todas: list[tuple], meses: dict[tuple[int, int], list[tuple]]
+) -> Path:
+    """Archivo completo: Dashboard_Total + Bitácora_Completa + una pestaña por mes."""
+    MESES_ES = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun",
+                "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
-def _escribir_soporte_sync(ruta: Path, filas: list[tuple], etiqueta: str) -> Path:
-    """Parte bloqueante (I/O de archivo): se ejecuta en un hilo aparte para no frenar al bot."""
     wb = Workbook()
     del wb["Sheet"]
-    _hoja_dashboard_soporte(wb, filas, etiqueta)
-    _hoja_bitacora(wb, filas)
-    wb.active = 0
+
+    # 1. Dashboard total con todo el historial
+    _hoja_dashboard_soporte(wb, "Dashboard_Total", filas_todas, "Historial completo")
+
+    # 2. Bitácora con todos los casos
+    _hoja_bitacora_sync(wb, "Bitácora_Completa", filas_todas)
+
+    # 3. Una pestaña por mes, ordenada cronológicamente
+    for (anio, mes) in sorted(meses.keys()):
+        nombre = "Sin fecha" if anio == 0 else f"{MESES_ES[mes]} {anio}"
+        _hoja_bitacora_sync(wb, nombre, meses[(anio, mes)])
 
     ruta.parent.mkdir(parents=True, exist_ok=True)
     wb.save(ruta)
-    log.info("Reporte de soporte TI generado en %s (%d casos)", ruta, len(filas))
+    log.info("Reporte completo generado en %s (%d casos, %d meses)", ruta, len(filas_todas), len(meses))
+    return ruta
+
+
+def _escribir_soporte_periodo_sync(ruta: Path, filas: list[tuple], etiqueta: str) -> Path:
+    """Archivo de período específico (diario/semanal/mensual): Dashboard + Bitácora del período."""
+    wb = Workbook()
+    del wb["Sheet"]
+    _hoja_dashboard_soporte(wb, "Dashboard_Soporte", filas, etiqueta)
+    _hoja_bitacora_sync(wb, "Bitácora_Detallada", filas)
+    wb.active = 0
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(ruta)
+    log.info("Reporte de soporte TI (%s) generado en %s (%d casos)", etiqueta, ruta, len(filas))
     return ruta
 
 
@@ -408,7 +471,7 @@ async def sincronizar_inventario_en_bg() -> Path | None:
         return None
 
 
-async def generar_informe_soporte_en_bg(periodo: str = "mensual") -> Path | None:
+async def generar_informe_soporte_en_bg(periodo: str = "completo") -> Path | None:
     try:
         ruta = await generar_excel_incidencias(periodo)
         await subir_archivo_a_onedrive(ruta)

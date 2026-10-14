@@ -17,7 +17,7 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from . import ai
-from .catalogo import Ubicacion
+from .catalogo import FALLAS_POR_TIPO, FALLAS_GENERALES, TipoEquipo, Ubicacion
 from .config import settings
 from .database import SessionLocal
 from .mailer import enviar_correo_baja
@@ -88,6 +88,42 @@ async def cmd_start(update: Update, ctx: Ctx) -> None:
         )
 
 
+async def cmd_reportar(update: Update, ctx: Ctx) -> None:
+    """/reportar — Asistente interactivo por botones para reportar fallas sin voz ni texto."""
+    msg = update.effective_message
+    async with SessionLocal() as s:
+        user = await get_usuario(s, update.effective_user.id)
+        if not user:
+            await msg.reply_text(
+                f"No estás registrado. Tu ID es <code>{update.effective_user.id}</code>; pásaselo al administrador.",
+                parse_mode=HTML,
+            )
+            return
+        estaciones = (await s.exec(select(Estacion).order_by(Estacion.nombre))).all()
+
+    if not estaciones:
+        await msg.reply_text("No hay ubicaciones registradas en el sistema.")
+        return
+
+    filas = []
+    temp_fila = []
+    for est in estaciones:
+        temp_fila.append(Btn(est.nombre, callback_data=f"rpt_est:{est.id}"))
+        if len(temp_fila) == 2:
+            filas.append(temp_fila)
+            temp_fila = []
+    if temp_fila:
+        filas.append(temp_fila)
+    filas.append([Btn("Cancelar", callback_data="rpt_cancel")])
+
+    await msg.reply_text(
+        "<b>Reportar Incidencia</b>\n\n"
+        "Seleccione la ubicación o módulo donde se presenta el inconveniente:",
+        parse_mode=HTML,
+        reply_markup=Kb(filas),
+    )
+
+
 async def cmd_help(update: Update, ctx: Ctx) -> None:
     """/help o /ayuda — muestra los comandos disponibles según el rol del usuario."""
     async with SessionLocal() as s:
@@ -105,6 +141,7 @@ async def cmd_help(update: Update, ctx: Ctx) -> None:
     lineas = [
         f"<b>Comandos disponibles (Rol: {user.rol})</b>\n",
         "<b>General:</b>",
+        "/reportar — Reporta una falla mediante botones de acceso rápido (sin escribir ni audio).",
         "/start — Inicia el bot y verifica tu autorización.",
         "/help o /ayuda — Muestra esta lista de comandos.",
         "/chatid — Muestra el User ID y el ID del chat actual.\n",
@@ -221,23 +258,30 @@ async def cmd_sync_inventario(update: Update, ctx: Ctx) -> None:
 
 
 async def cmd_informe_soporte(update: Update, ctx: Ctx) -> None:
-    """/informe_soporte [diario|semanal|mensual] — genera el reporte de Soporte TI y lo envía por Telegram."""
+    """/informe_soporte [diario|semanal|mensual] — genera el reporte de Soporte TI y lo envía por Telegram.
+    Sin argumento: genera el historial completo con una pestaña por mes.
+    Con argumento: genera un archivo del período específico.
+    """
     async with SessionLocal() as s:
         user = await get_usuario(s, update.effective_user.id)
     if not (es_admin_user(user, update.effective_user.id) or (user and user.rol in ROLES_INFORMES)):
         await update.message.reply_text("No tienes permiso para pedir este informe.")
         return
-    periodo = (ctx.args[0].lower() if ctx.args else "mensual")
-    if periodo not in ("diario", "semanal", "mensual"):
-        await update.message.reply_text("Uso: /informe_soporte [diario|semanal|mensual] (por defecto: mensual)")
+    periodo = (ctx.args[0].lower() if ctx.args else "completo")
+    if periodo not in ("completo", "diario", "semanal", "mensual"):
+        await update.message.reply_text(
+            "Uso: /informe_soporte [diario|semanal|mensual]\n"
+            "Sin argumento genera el historial completo dividido por meses."
+        )
         return
-    aviso = await update.message.reply_text(f"Generando informe ({periodo})…")
+    etiqueta = "historial completo" if periodo == "completo" else periodo
+    aviso = await update.message.reply_text(f"Generando informe ({etiqueta})…")
     ruta = await generar_informe_soporte_en_bg(periodo)
     if ruta is None:
         await aviso.edit_text("[ERROR] No se pudo generar el informe. Revisa los logs del bot.")
         return
     await aviso.edit_text("[OK] Informe generado. Enviando archivo…")
-    await update.message.reply_document(ruta, filename=ruta.name, caption=f"Reporte de Soporte TI — {periodo}")
+    await update.message.reply_document(ruta, filename=ruta.name, caption=f"Reporte de Soporte TI — {etiqueta}")
 
 
 async def cmd_cargar_inventario(update: Update, ctx: Ctx) -> None:
@@ -520,9 +564,158 @@ async def on_reply_soporte(update: Update, ctx: Ctx) -> None:
         await msg.reply_text(await texto_borrador(s, inc), parse_mode=HTML, reply_markup=teclado_borrador(inc.id))
 
 
+async def _on_callback_reportar(ctx: Ctx, q, s, user: Usuario, data: str) -> None:
+    partes = data.split(":")
+    accion = partes[0]
+
+    if accion == "rpt_cancel":
+        await q.answer("Reporte cancelado")
+        await q.edit_message_text("Reporte cancelado.")
+        return
+
+    if accion == "rpt_est":
+        est_id = int(partes[1])
+        est = await s.get(Estacion, est_id)
+        if not est:
+            await q.answer("Ubicación no válida.", show_alert=True)
+            return
+
+        tipos = [t.value for t in TipoEquipo]
+
+        filas = []
+        temp_fila = []
+        for t in sorted(tipos):
+            temp_fila.append(Btn(t, callback_data=f"rpt_eq:{est_id}:{t}"))
+            if len(temp_fila) == 2:
+                filas.append(temp_fila)
+                temp_fila = []
+        if temp_fila:
+            filas.append(temp_fila)
+        filas.append([Btn("Cancelar", callback_data="rpt_cancel")])
+
+        await q.answer()
+        await q.edit_message_text(
+            f"<b>Reportar Incidencia</b>\n"
+            f"Ubicación: <b>{h(est.nombre)}</b>\n\n"
+            f"Seleccione el tipo de equipo afectado:",
+            parse_mode=HTML,
+            reply_markup=Kb(filas),
+        )
+        return
+
+    if accion == "rpt_eq":
+        est_id = int(partes[1])
+        tipo_eq = partes[2]
+        est = await s.get(Estacion, est_id)
+        if not est:
+            await q.answer("Ubicación no válida.", show_alert=True)
+            return
+
+        fallas = FALLAS_POR_TIPO.get(tipo_eq, FALLAS_GENERALES)
+        filas = []
+        for idx, f_text in enumerate(fallas):
+            filas.append([Btn(f_text, callback_data=f"rpt_fa:{est_id}:{tipo_eq}:{idx}")])
+        filas.append([Btn("Cancelar", callback_data="rpt_cancel")])
+
+        await q.answer()
+        await q.edit_message_text(
+            f"<b>Reportar Incidencia</b>\n"
+            f"Ubicación: <b>{h(est.nombre)}</b>\n"
+            f"Equipo: <b>{h(tipo_eq)}</b>\n\n"
+            f"Seleccione el tipo de falla presentada:",
+            parse_mode=HTML,
+            reply_markup=Kb(filas),
+        )
+        return
+
+    if accion == "rpt_fa":
+        est_id = int(partes[1])
+        tipo_eq = partes[2]
+        falla_idx = int(partes[3])
+        est = await s.get(Estacion, est_id)
+        fallas = FALLAS_POR_TIPO.get(tipo_eq, FALLAS_GENERALES)
+        falla_str = fallas[falla_idx] if 0 <= falla_idx < len(fallas) else "Falla no especificada"
+
+        filas = [
+            [Btn("Enviar Reporte", callback_data=f"rpt_send:{est_id}:{tipo_eq}:{falla_idx}")],
+            [Btn("Cancelar", callback_data="rpt_cancel")],
+        ]
+
+        await q.answer()
+        await q.edit_message_text(
+            f"<b>Resumen del Reporte</b>\n\n"
+            f"<b>Ubicación:</b> {h(est.nombre if est else '')}\n"
+            f"<b>Equipo:</b> {h(tipo_eq)}\n"
+            f"<b>Falla:</b> {h(falla_str)}\n\n"
+            f"Confirme si desea enviar este reporte al equipo de Soporte TI:",
+            parse_mode=HTML,
+            reply_markup=Kb(filas),
+        )
+        return
+
+    if accion == "rpt_send":
+        est_id = int(partes[1])
+        tipo_eq = partes[2]
+        falla_idx = int(partes[3])
+        est = await s.get(Estacion, est_id)
+        fallas = FALLAS_POR_TIPO.get(tipo_eq, FALLAS_GENERALES)
+        falla_str = fallas[falla_idx] if 0 <= falla_idx < len(fallas) else "Falla no especificada"
+
+        res = await resolver_activo(s, est.nombre if est else None, tipo_eq, None)
+
+        inc = Incidencia(
+            update_id=q.message.message_id,
+            reportante_id=user.id,
+            fechahora_reporte=utcnow(),
+            estado=E.ABIERTA.value,
+            origen="bot_asistido",
+            estacion_id=est.id if est else None,
+            activo_id=res.activo.id if res and res.activo else None,
+            tipo_equipo=tipo_eq,
+            descripcion=falla_str,
+            requiere_revision=res.motivo is not None if res else False,
+            motivo_revision=res.motivo if res else None,
+        )
+        s.add(inc)
+        await s.commit()
+        await s.refresh(inc)
+
+        await q.answer("Reporte enviado")
+        await q.edit_message_text(
+            f"<b>Reporte Registrado</b>\n\n"
+            f"Se ha registrado la incidencia <b>Caso #{inc.id}</b>.\n"
+            f"El equipo de Soporte TI ha sido notificado para su atención.",
+            parse_mode=HTML,
+        )
+
+        try:
+            m = await ctx.bot.send_message(
+                settings.SUPPORT_CHAT_ID,
+                await texto_incidencia(s, inc),
+                parse_mode=HTML,
+                reply_markup=teclado_tomar(inc.id),
+            )
+            inc.msg_soporte_id = m.message_id
+            await s.commit()
+        except Exception:
+            log.exception("No se pudo notificar la incidencia %s a Soporte TI", inc.id)
+
+        asyncio.create_task(generar_informe_soporte_en_bg())
+        return
+
+
 # ================================================================= botones
 async def on_callback(update: Update, ctx: Ctx) -> None:
     q = update.callback_query
+    if q.data.startswith("rpt_"):
+        async with SessionLocal() as s:
+            user = await get_usuario(s, q.from_user.id)
+            if not user:
+                await q.answer("No estás registrado.", show_alert=True)
+                return
+            await _on_callback_reportar(ctx, q, s, user, q.data)
+        return
+
     try:
         accion, *resto = q.data.split(":")
         inc_id = int(resto[0])
@@ -757,7 +950,7 @@ async def job_actualizar_reportes(ctx: Ctx) -> None:
     """Mantiene los dos Excel al día en la nube aunque nadie los pida (además del disparo
     automático tras cada baja y de los comandos /sync_inventario y /informe_soporte)."""
     await sincronizar_inventario_en_bg()
-    await generar_informe_soporte_en_bg("mensual")
+    await generar_informe_soporte_en_bg("completo")
 
 
 async def job_reintentar_correos(ctx: Ctx) -> None:

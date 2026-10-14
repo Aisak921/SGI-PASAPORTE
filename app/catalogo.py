@@ -72,3 +72,61 @@ def norm_etiqueta(valor) -> str | None:
         return None
     v = re.sub(r"[\s_]+", "-", str(valor).strip().upper())
     return None if v in ("", "NULL", "NONE") else v
+
+
+FALLAS_POR_TIPO: dict[str, list[str]] = {
+    TipoEquipo.COMPUTADOR.value: [
+        "Equipo no enciende / Sin energía",
+        "Sistema bloqueado o lento",
+        "Sin conexión a red / Internet",
+        "Error de sistema operativo",
+    ],
+    TipoEquipo.MONITOR.value: [
+        "Pantalla negra / Sin señal",
+        "Imagen parpadea o distorsionada",
+        "No enciende",
+    ],
+    TipoEquipo.IMPRESORA.value: [
+        "Atasco de papel",
+        "Error de impresión / Mala calidad",
+        "Desconectada / Sin comunicación",
+        "Falta de insumo / Cinta / Tinta",
+    ],
+    TipoEquipo.ESCANER.value: [
+        "Error de lectura de documento",
+        "No escanea / Dispositivo no detectado",
+        "Lente sucio o atascado",
+    ],
+    TipoEquipo.HUELLERO.value: [
+        "No captura huella dactilar",
+        "Dispositivo no detectado",
+        "Sensor descalibrado",
+    ],
+    TipoEquipo.CAMARA.value: [
+        "Cámara no toma fotografía",
+        "Imagen borrosa / Sin enfoque",
+        "Desconectada / Error de puerto USB",
+    ],
+    TipoEquipo.PAD_FIRMA.value: [
+        "No registra firma digital",
+        "Pantalla táctil no responde",
+        "Dispositivo no detectado",
+    ],
+    TipoEquipo.MOUSE_TECLADO.value: [
+        "Teclado no escribe / Teclas bloqueadas",
+        "Mouse no responde / Sin movimiento",
+        "Falla de puerto USB",
+    ],
+    TipoEquipo.ESCANER_CODIGO.value: [
+        "Lector no emite haz de luz",
+        "No lee código de barras",
+        "Desconectado",
+    ],
+}
+
+FALLAS_GENERALES: list[str] = [
+    "Falla de energía / Eléctrica",
+    "Falla de red / Internet",
+    "Falla de software / Aplicación",
+    "Otro inconveniente general",
+]
