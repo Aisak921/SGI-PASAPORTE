@@ -59,6 +59,24 @@ services:
         max-size: "5m"
         max-file: "3"
 
+  # ── Túnel público ngrok (opcional) ──────────────────────────────────
+  # Expone el portal web a internet para que los funcionarios accedan
+  # desde datos móviles fuera de la red local.
+  # Para activarlo: agrega NGROK_AUTHTOKEN=tu_token en el .env
+  # Obtén tu token gratis en: https://dashboard.ngrok.com
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    depends_on:
+      - web
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    command: http web:8080 --log=stdout
+    ports:
+      - "4040:4040"   # panel de control local: http://localhost:4040
+    profiles:
+      - ngrok          # solo arranca si ejecutas: docker compose --profile ngrok up -d
+
 volumes:
   pgdata:
   audio:
